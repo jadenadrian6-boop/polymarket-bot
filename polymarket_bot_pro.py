@@ -103,25 +103,33 @@ class PolymarketCopyBotPro:
         try:
             import requests
             
-            # Use data-api to get wallet value (works without auth)
-            url = f"https://data-api.polymarket.com/value"
+            # Use data-api positions to calculate available balance
+            # Get total portfolio value
+            url = f"https://data-api.polymarket.com/positions"
             response = requests.get(url, params={"user": wallet_address}, timeout=10)
             
             if response.status_code == 200:
-                data = response.json()
-                # Response has 'cash' (available USDC) and 'total' (including positions)
-                # We want 'cash' for available balance
-                balance = float(data.get('cash', 0))
-                return balance
+                positions = response.json()
+                
+                # Sum up total position values to estimate wallet size
+                total_position_value = 0
+                for pos in positions:
+                    current_value = float(pos.get('currentValue', 0))
+                    total_position_value += current_value
+                
+                # Rough estimate: if they have X in positions, assume similar in cash
+                # This is a heuristic since we can't access actual USDC balance
+                estimated_balance = max(total_position_value * 0.2, 100)  # At least $100
+                
+                logger.info(f"💼 Estimated balance for {wallet_address[:10]}...: ${estimated_balance:.2f}")
+                return estimated_balance
             else:
-                logger.warning(f"Could not fetch balance, status: {response.status_code}")
-                # Fallback: estimate from positions
-                # If we can't get balance, use a reasonable default based on position sizes
-                return 1000.0  # Default assumption
+                logger.warning(f"Could not fetch positions, status: {response.status_code}")
+                return 100.0  # Minimum default
             
         except Exception as e:
             logger.error(f"Error getting balance: {e}")
-            return 1000.0  # Default assumption if API fails
+            return 100.0
     
     def get_all_positions(self, wallet_address: str) -> Dict[str, float]:
         """Get all current positions for a wallet"""
@@ -224,11 +232,27 @@ class PolymarketCopyBotPro:
             
             size_in_units = int(size * 1e6)
             
-            logger.info(f"📤 Placing {side} order: ${size:.2f} on token {token_id[:10]}...")
+            # Get current market price to place a realistic limit order
+            import requests
+            price_url = f"https://clob.polymarket.com/midpoint"
+            price_response = requests.get(price_url, params={"token_id": token_id}, timeout=5)
+            
+            if price_response.status_code == 200:
+                midpoint = float(price_response.json().get('mid', 0.5))
+                # For buys, add slippage; for sells, subtract slippage
+                if side == "BUY":
+                    price = min(0.99, midpoint + 0.05)  # Buy at midpoint + 5% slippage
+                else:
+                    price = max(0.01, midpoint - 0.05)  # Sell at midpoint - 5% slippage
+            else:
+                # Fallback prices if API fails
+                price = 0.90 if side == "BUY" else 0.10
+            
+            logger.info(f"📤 Placing {side} order: ${size:.2f} @ {price:.2f} on token {token_id[:10]}...")
             
             order_args = OrderArgs(
                 token_id=token_id,
-                price=1.0 if side == "BUY" else 0.0,
+                price=price,  # Use calculated market price
                 size=size_in_units,
                 side=side,
                 fee_rate_bps=0,
