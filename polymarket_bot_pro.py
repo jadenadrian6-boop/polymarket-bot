@@ -39,7 +39,7 @@ class PolymarketCopyBotPro:
         self.target_wallet = os.getenv('TARGET_WALLET_ADDRESS', '').lower()
         self.your_private_key = os.getenv('YOUR_PRIVATE_KEY')
         self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '100'))
-        self.min_bet_size = float(os.getenv('MIN_BET_SIZE', '1'))
+        self.min_bet_size = float(os.getenv('MIN_BET_SIZE', '0.01'))  # Still load but won't enforce
         self.max_bet_size = float(os.getenv('MAX_BET_SIZE', '1000'))
         
         # Initialize Polymarket client
@@ -184,8 +184,8 @@ class PolymarketCopyBotPro:
             # Calculate your bet size
             your_bet_size = (your_balance * adjusted_percentage) / 100
             
-            # Apply min/max limits
-            your_bet_size = max(self.min_bet_size, min(your_bet_size, self.max_bet_size))
+            # Apply ONLY max limit (no minimum enforcement for proportional matching)
+            your_bet_size = min(your_bet_size, self.max_bet_size)
             
             # Don't bet more than available balance
             your_bet_size = min(your_bet_size, your_balance * 0.95)  # Keep 5% buffer
@@ -270,6 +270,7 @@ class PolymarketCopyBotPro:
             logger.info(f"💰 Target balance: ${target_balance:.2f}")
             logger.info(f"💰 Your balance: ${your_balance:.2f}")
             
+            # Check minimum balance (still useful to prevent dust trades)
             if your_balance < self.min_bet_size:
                 logger.warning(f"⚠️  Insufficient balance (${your_balance:.2f} < ${self.min_bet_size:.2f})")
                 return
@@ -277,8 +278,9 @@ class PolymarketCopyBotPro:
             # Calculate copy size
             copy_size = self.calculate_copy_size(matched_size, target_balance, your_balance)
             
-            if copy_size < self.min_bet_size:
-                logger.warning(f"⚠️  Copy size ${copy_size:.2f} below minimum ${self.min_bet_size:.2f}")
+            # Check if calculated size is effectively zero or too small for API
+            if copy_size < 0.01:
+                logger.warning(f"⚠️  Copy size ${copy_size:.4f} too small to execute")
                 return
             
             # Place the order
@@ -302,7 +304,7 @@ class PolymarketCopyBotPro:
         logger.info(f"👀 Monitoring: {self.target_wallet}")
         logger.info(f"💼 Your wallet: {self.your_wallet}")
         logger.info(f"📊 Copy percentage: {self.copy_percentage}%")
-        logger.info(f"💵 Min bet: ${self.min_bet_size} | Max bet: ${self.max_bet_size}")
+        logger.info(f"💵 Max bet: ${self.max_bet_size} (proportional matching enabled)")
         logger.info(f"{'='*70}\n")
         
         # Load previous state
