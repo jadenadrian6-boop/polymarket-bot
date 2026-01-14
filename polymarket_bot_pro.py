@@ -482,14 +482,14 @@ class PolymarketCopyBotPro:
                 # Reset error counter on success
                 consecutive_errors = 0
                 
-                # Sync positions every 2 minutes (24 cycles at 5 sec each)
+                # Sync positions every 10 minutes (40 cycles)
                 sync_counter += 1
-                if sync_counter >= 24:
+                if sync_counter >= 40:
                     self.sync_positions()
                     sync_counter = 0
                 
                 # Wait before next check
-                await asyncio.sleep(5)  # Check every 5 seconds for near real-time
+                await asyncio.sleep(15)  # Check every 15 seconds
                 
             except KeyboardInterrupt:
                 logger.info("\n🛑 Bot stopped by user")
