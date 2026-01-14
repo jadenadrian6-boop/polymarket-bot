@@ -149,85 +149,42 @@ class PolymarketCopyBotPro:
             return 0.0
     
     def get_recent_orders(self, wallet_address: str) -> List[Dict]:
-        """Fetch recent orders for a wallet using trades endpoint"""
+        """Fetch recent orders for a wallet"""
         try:
+            # Use Polymarket API to get orders
             import requests
-            
-            # Use the trades endpoint instead - this tracks actual executed trades
-            url = f"https://gamma-api.polymarket.com/trades"
+            url = "https://clob.polymarket.com/orders"
             params = {
                 "maker": wallet_address,
-                "limit": 50
             }
             
             response = requests.get(url, params=params, timeout=10)
             
             if response.status_code == 200:
-                trades = response.json()
+                data = response.json()
+                orders = data.get('data', [])
                 
-                # Filter for new trades since last check
+                # Filter for filled/partially filled orders since last check
                 new_orders = []
-                for trade in trades:
-                    # Parse timestamp (trades use different timestamp format)
-                    timestamp_str = trade.get('timestamp', '')
-                    try:
-                        # Convert ISO timestamp to unix timestamp
-                        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                        created_at = int(dt.timestamp())
-                    except:
-                        created_at = int(time.time())
+                for order in orders:
+                    created_at = int(order.get('created_at', 0))
+                    order_id = order.get('order_id')
+                    status = order.get('status', '')
                     
-                    trade_id = trade.get('id', trade.get('trade_id', ''))
-                    
-                    # Only process trades that are new
+                    # Only process filled orders that are new
                     if (created_at > self.last_check_time and 
-                        trade_id not in self.processed_orders):
-                        
-                        # Convert trade to order-like format
-                        order_like = {
-                            'order_id': trade_id,
-                            'asset_id': trade.get('asset_id', trade.get('token_id', '')),
-                            'original_size': trade.get('size', 0),
-                            'size_matched': trade.get('size', 0),
-                            'price': trade.get('price', 0),
-                            'side': trade.get('side', 'BUY'),
-                            'status': 'FILLED',
-                            'created_at': created_at
-                        }
-                        new_orders.append(order_like)
+                        order_id not in self.processed_orders and
+                        status in ['FILLED', 'MATCHED']):
+                        new_orders.append(order)
                 
                 return new_orders
             else:
-                logger.warning(f"Could not fetch trades: {response.status_code}")
-                # Try alternative: use SDK to get orders
-                try:
-                    if hasattr(self.client, 'get_orders'):
-                        orders = self.client.get_orders(wallet_address)
-                        logger.info("✅ Used SDK method to fetch orders")
-                        return self._process_sdk_orders(orders)
-                except Exception as sdk_error:
-                    logger.warning(f"SDK method also failed: {sdk_error}")
-                
+                logger.warning(f"Could not fetch orders: {response.status_code}")
                 return []
                 
         except Exception as e:
             logger.error(f"Error fetching orders: {e}")
             return []
-    
-    def _process_sdk_orders(self, orders: List[Dict]) -> List[Dict]:
-        """Process orders from SDK format"""
-        new_orders = []
-        for order in orders:
-            created_at = int(order.get('created_at', 0))
-            order_id = order.get('order_id', order.get('id'))
-            status = order.get('status', '')
-            
-            if (created_at > self.last_check_time and 
-                order_id not in self.processed_orders and
-                status in ['FILLED', 'MATCHED']):
-                new_orders.append(order)
-        
-        return new_orders
     
     def get_market_info(self, token_id: str) -> Optional[Dict]:
         """Get market information with caching"""
