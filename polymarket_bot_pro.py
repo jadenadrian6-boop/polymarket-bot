@@ -123,8 +123,8 @@ class PolymarketCopyBotPro:
         try:
             import requests
             
-            url = f"https://gamma-api.polymarket.com/positions"
-            response = requests.get(url, params={"address": wallet_address}, timeout=10)
+            url = f"https://data-api.polymarket.com/positions"
+            response = requests.get(url, params={"user": wallet_address}, timeout=10)
             
             positions = {}
             if response.status_code == 200:
