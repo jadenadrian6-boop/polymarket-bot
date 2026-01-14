@@ -260,8 +260,13 @@ class PolymarketCopyBotPro:
             if not self.last_target_positions:
                 # First run - just save current state
                 logger.info(f"📊 Initial scan: {len(self.current_target_positions)} positions found")
+                logger.info(f"🔄 Baseline established - now monitoring for changes...")
                 self.last_target_positions = self.current_target_positions.copy()
+                self.save_state()
                 return
+            
+            # Log that we're actively monitoring
+            changes_detected = 0
             
             # Compare positions to detect changes
             all_tokens = set(list(self.last_target_positions.keys()) + list(self.current_target_positions.keys()))
@@ -274,6 +279,8 @@ class PolymarketCopyBotPro:
                 
                 if abs(change) < 0.01:
                     continue  # No significant change
+                
+                changes_detected += 1
                 
                 # Trade detected!
                 logger.info(f"\n{'='*70}")
@@ -298,6 +305,15 @@ class PolymarketCopyBotPro:
                     self.copy_sell(token_id, abs(change), old_size)
                 
                 logger.info(f"{'='*70}\n")
+            
+            # Log if no changes (only every 12 checks = 1 minute)
+            if not hasattr(self, '_quiet_check_counter'):
+                self._quiet_check_counter = 0
+            
+            self._quiet_check_counter += 1
+            if self._quiet_check_counter >= 12 and changes_detected == 0:
+                logger.info(f"✓ No position changes (monitoring {len(self.current_target_positions)} positions)")
+                self._quiet_check_counter = 0
             
             # Update last positions
             self.last_target_positions = self.current_target_positions.copy()
