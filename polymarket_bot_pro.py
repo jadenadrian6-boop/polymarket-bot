@@ -39,6 +39,14 @@ class PolymarketCopyBotPro:
         # Configuration
         self.target_wallet = os.getenv('TARGET_WALLET_ADDRESS', '').lower()
         self.your_private_key = os.getenv('YOUR_PRIVATE_KEY')
+        
+        # Validate private key
+        if not self.your_private_key:
+            logger.error("❌ YOUR_PRIVATE_KEY not set!")
+            self.client = None
+            self.your_wallet = None
+            return
+            
         self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '100'))
         self.min_bet_size = float(os.getenv('MIN_BET_SIZE', '0.01'))
         self.max_bet_size = float(os.getenv('MAX_BET_SIZE', '1000'))
@@ -494,3 +502,29 @@ class PolymarketCopyBotPro:
                 if consecutive_errors >= max_errors:
                     logger.error("Too many consecutive errors. Stopping bot.")
                     break
+                
+                await asyncio.sleep(60)  # Wait longer on error
+    
+    def run(self):
+        """Start the bot"""
+        if not self.target_wallet:
+            logger.error("❌ TARGET_WALLET_ADDRESS not set in .env file!")
+            return
+        
+        if not self.client or not self.your_wallet:
+            logger.error("❌ Could not initialize client. Check YOUR_PRIVATE_KEY in .env!")
+            return
+        
+        # Run the monitoring loop
+        try:
+            asyncio.run(self.monitor_wallet())
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+        finally:
+            self.save_processed_orders()
+            logger.info("Bot stopped. State saved.")
+
+
+if __name__ == "__main__":
+    bot = PolymarketCopyBotPro()
+    bot.run()
