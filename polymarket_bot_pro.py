@@ -126,14 +126,32 @@ class PolymarketCopyBotPro:
             url = f"https://data-api.polymarket.com/positions"
             response = requests.get(url, params={"user": wallet_address}, timeout=10)
             
+            # Debug logging
+            logger.info(f"📡 API Response Status: {response.status_code}")
+            
             positions = {}
             if response.status_code == 200:
                 data = response.json()
-                for position in data:
-                    token_id = position.get('asset_id')
-                    size = float(position.get('size', 0))
-                    if size > 0:  # Only track non-zero positions
-                        positions[token_id] = size
+                logger.info(f"📦 Raw response type: {type(data)}, length: {len(data) if isinstance(data, list) else 'N/A'}")
+                
+                # Handle if response is a list
+                if isinstance(data, list):
+                    for position in data:
+                        asset = position.get('asset')
+                        size = float(position.get('size', 0))
+                        if asset and size > 0:
+                            positions[asset] = size
+                # Handle if response is a dict with positions array
+                elif isinstance(data, dict) and 'positions' in data:
+                    for position in data['positions']:
+                        asset = position.get('asset')
+                        size = float(position.get('size', 0))
+                        if asset and size > 0:
+                            positions[asset] = size
+                else:
+                    logger.warning(f"⚠️ Unexpected response format: {type(data)}")
+            else:
+                logger.error(f"❌ API returned status {response.status_code}")
             
             return positions
             
