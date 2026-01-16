@@ -48,7 +48,7 @@ class PolymarketCopyBotPro:
             return
         
         # NEW STRATEGY: Copy a fixed % of their bet size
-        self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '0.1'))  # Default 0.1% of their bet
+        self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '0.1'))
         self.min_bet_size = float(os.getenv('MIN_BET_SIZE', '1'))
         self.max_bet_size = float(os.getenv('MAX_BET_SIZE', '1000'))
         
@@ -111,7 +111,6 @@ class PolymarketCopyBotPro:
             if response.status_code == 200:
                 data = response.json()
                 
-                # Handle if response is a list
                 if isinstance(data, list):
                     for position in data:
                         asset = position.get('asset')
@@ -151,10 +150,8 @@ class PolymarketCopyBotPro:
     def calculate_copy_size(self, target_bet_size: float) -> float:
         """Calculate copy bet size as fixed percentage of their bet"""
         try:
-            # Simple: copy X% of whatever they bet
             your_bet_size = target_bet_size * (self.copy_percentage / 100)
             
-            # Apply min/max limits
             if your_bet_size < self.min_bet_size:
                 logger.debug(f"Bet ${your_bet_size:.2f} below minimum ${self.min_bet_size}")
                 return 0.0
@@ -183,20 +180,17 @@ class PolymarketCopyBotPro:
             
             size_in_units = int(size * 1e6)
             
-            # Get current market price
             import requests
             price_url = f"https://clob.polymarket.com/midpoint"
             price_response = requests.get(price_url, params={"token_id": token_id}, timeout=5)
             
             if price_response.status_code == 200:
                 midpoint = float(price_response.json().get('mid', 0.5))
-                # For buys, add slippage; for sells, subtract slippage
                 if side == "BUY":
                     price = min(0.99, midpoint + 0.05)
                 else:
                     price = max(0.01, midpoint - 0.05)
             else:
-                # Fallback prices
                 price = 0.90 if side == "BUY" else 0.10
             
             logger.info(f"📤 Placing {side} order: ${size:.2f} @ {price:.2f} on token {token_id[:10]}...")
@@ -215,7 +209,6 @@ class PolymarketCopyBotPro:
             if resp.get('success'):
                 logger.info(f"✅ Order placed! Order ID: {resp.get('orderID')}")
                 
-                # Update position tracking
                 if side == "BUY":
                     self.your_positions[token_id] = self.your_positions.get(token_id, 0.0) + size
                 elif side == "SELL":
@@ -234,35 +227,28 @@ class PolymarketCopyBotPro:
     def detect_and_copy_trades(self):
         """Detect trades by comparing position snapshots"""
         try:
-            # Get current positions
             self.current_target_positions = self.get_all_positions(self.target_wallet)
             
             if not self.last_target_positions:
-                # First run - just save current state
                 logger.info(f"📊 Initial scan: {len(self.current_target_positions)} positions found")
                 logger.info(f"🔄 Baseline established - now monitoring for changes...")
                 self.last_target_positions = self.current_target_positions.copy()
                 self.save_state()
                 return
             
-            # Log that we're actively monitoring
             changes_detected = 0
-            
-            # Compare positions to detect changes
             all_tokens = set(list(self.last_target_positions.keys()) + list(self.current_target_positions.keys()))
             
             for token_id in all_tokens:
                 old_size = self.last_target_positions.get(token_id, 0.0)
                 new_size = self.current_target_positions.get(token_id, 0.0)
-                
                 change = new_size - old_size
                 
                 if abs(change) < 0.01:
-                    continue  # No significant change
+                    continue
                 
                 changes_detected += 1
                 
-                # Trade detected!
                 logger.info(f"\n{'='*70}")
                 logger.info(f"🎯 TRADE DETECTED!")
                 logger.info(f"Token: {token_id}")
@@ -270,23 +256,18 @@ class PolymarketCopyBotPro:
                 logger.info(f"New position: ${new_size:.2f}")
                 logger.info(f"Change: ${change:+.2f}")
                 
-                # Get market info
                 market_info = self.get_market_info(token_id)
                 if market_info:
                     question = market_info.get('question', 'Unknown')
                     logger.info(f"📋 Market: {question}")
                 
-                # Determine if BUY or SELL
                 if change > 0:
-                    # Position increased = BUY
                     self.copy_buy(token_id, abs(change))
                 else:
-                    # Position decreased = SELL
                     self.copy_sell(token_id, abs(change))
                 
                 logger.info(f"{'='*70}\n")
             
-            # Log if no changes (only every 12 checks = 1 minute)
             if not hasattr(self, '_quiet_check_counter'):
                 self._quiet_check_counter = 0
             
@@ -295,7 +276,6 @@ class PolymarketCopyBotPro:
                 logger.info(f"✓ Monitoring {len(self.current_target_positions)} positions - no changes")
                 self._quiet_check_counter = 0
             
-            # Update last positions
             self.last_target_positions = self.current_target_positions.copy()
             self.save_state()
             
@@ -305,14 +285,12 @@ class PolymarketCopyBotPro:
     def copy_buy(self, token_id: str, target_buy_size: float):
         """Copy a BUY trade at fixed percentage"""
         try:
-            # Calculate copy size (simple percentage of their bet)
             copy_size = self.calculate_copy_size(target_buy_size)
             
             if copy_size < self.min_bet_size:
                 logger.warning(f"⚠️  Copy size ${copy_size:.2f} below minimum ${self.min_bet_size}")
                 return
             
-            # Place order
             success = self.place_market_order(token_id, copy_size, "BUY")
             
             if success:
@@ -332,17 +310,13 @@ class PolymarketCopyBotPro:
                 logger.warning(f"⚠️  No position to sell (you have ${your_position:.2f})")
                 return
             
-            # Calculate how much to sell (same fixed percentage)
             copy_size = self.calculate_copy_size(target_sell_size)
-            
-            # Can't sell more than you have
             copy_size = min(copy_size, your_position)
             
             if copy_size < 0.01:
                 logger.warning(f"⚠️  Sell size ${copy_size:.2f} too small")
                 return
             
-            # Place order
             success = self.place_market_order(token_id, copy_size, "SELL")
             
             if success:
@@ -363,7 +337,6 @@ class PolymarketCopyBotPro:
         logger.info(f"⚡ Checking every 5 seconds")
         logger.info(f"{'='*70}\n")
         
-        # Load previous state
         self.load_state()
         
         consecutive_errors = 0
@@ -371,13 +344,8 @@ class PolymarketCopyBotPro:
         
         while True:
             try:
-                # Check for trades by comparing positions
                 self.detect_and_copy_trades()
-                
-                # Reset error counter
                 consecutive_errors = 0
-                
-                # Wait before next check
                 await asyncio.sleep(5)
                 
             except KeyboardInterrupt:
