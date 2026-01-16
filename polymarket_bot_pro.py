@@ -60,6 +60,24 @@ class PolymarketCopyBotPro:
                 chain_id=POLYGON,
             )
             self.your_wallet = self.client.get_address().lower()
+            
+            # Derive and set API credentials for order placement
+            try:
+                logger.info("🔑 Deriving API credentials...")
+                # Method 1: Try derive_api_key
+                api_creds = self.client.derive_api_key()
+                self.client.set_api_creds(api_creds)
+                logger.info("✅ API credentials set via derive_api_key")
+            except AttributeError:
+                try:
+                    # Method 2: Try create_or_derive_api_creds
+                    api_creds = self.client.create_or_derive_api_creds()
+                    self.client.set_api_creds(api_creds)
+                    logger.info("✅ API credentials set via create_or_derive_api_creds")
+                except Exception as e2:
+                    logger.warning(f"Could not set API creds automatically: {e2}")
+                    logger.info("ℹ️  Will use private key signing for orders")
+            
             logger.info(f"✅ Connected - Your wallet: {self.your_wallet}")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}")
