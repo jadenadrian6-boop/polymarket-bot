@@ -199,8 +199,29 @@ class PolymarketCopyBotPro:
             size_in_units = int(size * 1e6)
             
             import requests
+            
+            # Add proper headers to bypass Cloudflare
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin'
+            }
+            
             price_url = f"https://clob.polymarket.com/midpoint"
-            price_response = requests.get(price_url, params={"token_id": token_id}, timeout=5)
+            price_response = requests.get(
+                price_url, 
+                params={"token_id": token_id}, 
+                headers=headers,
+                timeout=10
+            )
             
             if price_response.status_code == 200:
                 midpoint = float(price_response.json().get('mid', 0.5))
@@ -209,34 +230,56 @@ class PolymarketCopyBotPro:
                 else:
                     price = max(0.01, midpoint - 0.05)
             else:
+                logger.warning(f"Could not get midpoint (status {price_response.status_code}), using fallback")
                 price = 0.90 if side == "BUY" else 0.10
             
             logger.info(f"📤 Placing {side} order: ${size:.2f} @ {price:.2f} on token {token_id[:10]}...")
             
-            order_args = OrderArgs(
-                token_id=token_id,
-                price=price,
-                size=size_in_units,
-                side=side,
-                fee_rate_bps=0,
-            )
+            # Add retry logic for Cloudflare blocks
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    order_args = OrderArgs(
+                        token_id=token_id,
+                        price=price,
+                        size=size_in_units,
+                        side=side,
+                        fee_rate_bps=0,
+                    )
+                    
+                    signed_order = self.client.create_order(order_args)
+                    resp = self.client.post_order(signed_order, OrderType.FOK)
+                    
+                    if resp.get('success'):
+                        logger.info(f"✅ Order placed! Order ID: {resp.get('orderID')}")
+                        
+                        if side == "BUY":
+                            self.your_positions[token_id] = self.your_positions.get(token_id, 0.0) + size
+                        elif side == "SELL":
+                            self.your_positions[token_id] = max(0, self.your_positions.get(token_id, 0.0) - size)
+                        
+                        self.save_state()
+                        return True
+                    else:
+                        error_msg = resp.get('error', 'Unknown error')
+                        if 'cloudflare' in error_msg.lower() or 'blocked' in error_msg.lower():
+                            if attempt < max_retries - 1:
+                                logger.warning(f"Cloudflare block detected, retry {attempt + 1}/{max_retries}")
+                                time.sleep(2 ** attempt)  # Exponential backoff
+                                continue
+                        logger.error(f"❌ Order failed: {error_msg}")
+                        return False
+                        
+                except Exception as order_error:
+                    error_str = str(order_error)
+                    if ('cloudflare' in error_str.lower() or 'blocked' in error_str.lower()) and attempt < max_retries - 1:
+                        logger.warning(f"Cloudflare block detected (exception), retry {attempt + 1}/{max_retries}")
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise
             
-            signed_order = self.client.create_order(order_args)
-            resp = self.client.post_order(signed_order, OrderType.FOK)
-            
-            if resp.get('success'):
-                logger.info(f"✅ Order placed! Order ID: {resp.get('orderID')}")
-                
-                if side == "BUY":
-                    self.your_positions[token_id] = self.your_positions.get(token_id, 0.0) + size
-                elif side == "SELL":
-                    self.your_positions[token_id] = max(0, self.your_positions.get(token_id, 0.0) - size)
-                
-                self.save_state()
-                return True
-            else:
-                logger.error(f"❌ Order failed: {resp.get('error', 'Unknown error')}")
-                return False
+            logger.error("❌ All retry attempts failed")
+            return False
                 
         except Exception as e:
             logger.error(f"❌ Error placing order: {e}")
