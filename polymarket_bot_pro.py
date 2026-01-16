@@ -48,7 +48,7 @@ class PolymarketCopyBotPro:
             return
         
         # NEW STRATEGY: Copy a fixed % of their bet size
-        self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '0.1'))  # Default 0.1% of their bet
+        self.copy_percentage = float(os.getenv('COPY_PERCENTAGE', '0.1'))
         self.min_bet_size = float(os.getenv('MIN_BET_SIZE', '1'))
         self.max_bet_size = float(os.getenv('MAX_BET_SIZE', '1000'))
         
@@ -111,7 +111,6 @@ class PolymarketCopyBotPro:
             if response.status_code == 200:
                 data = response.json()
                 
-                # Handle if response is a list
                 if isinstance(data, list):
                     for position in data:
                         asset = position.get('asset')
@@ -141,4 +140,247 @@ class PolymarketCopyBotPro:
             
             if response.status_code == 200:
                 market_info = response.json()
-                self.m
+                self.market_cache[token_id] = market_info
+                return market_info
+            return None
+        except Exception as e:
+            logger.error(f"Error getting market info: {e}")
+            return None
+    
+    def calculate_copy_size(self, target_bet_size: float) -> float:
+        """Calculate copy bet size as fixed percentage of their bet"""
+        try:
+            your_bet_size = target_bet_size * (self.copy_percentage / 100)
+            
+            if your_bet_size < self.min_bet_size:
+                logger.debug(f"Bet ${your_bet_size:.2f} below minimum ${self.min_bet_size}")
+                return 0.0
+            
+            your_bet_size = min(your_bet_size, self.max_bet_size)
+            
+            logger.info(f"📊 Target bet: ${target_bet_size:.2f}")
+            logger.info(f"📊 Your bet: ${your_bet_size:.2f} ({self.copy_percentage}% of their bet)")
+            
+            return your_bet_size
+            
+        except Exception as e:
+            logger.error(f"Error calculating copy size: {e}")
+            return 0.0
+    
+    def place_market_order(self, token_id: str, size: float, side: str) -> bool:
+        """Place a market order on Polymarket"""
+        try:
+            if not self.client:
+                logger.error("Client not initialized")
+                return False
+            
+            if size < 0.01:
+                logger.warning(f"Size ${size:.4f} too small to execute")
+                return False
+            
+            size_in_units = int(size * 1e6)
+            
+            import requests
+            price_url = f"https://clob.polymarket.com/midpoint"
+            price_response = requests.get(price_url, params={"token_id": token_id}, timeout=5)
+            
+            if price_response.status_code == 200:
+                midpoint = float(price_response.json().get('mid', 0.5))
+                if side == "BUY":
+                    price = min(0.99, midpoint + 0.05)
+                else:
+                    price = max(0.01, midpoint - 0.05)
+            else:
+                price = 0.90 if side == "BUY" else 0.10
+            
+            logger.info(f"📤 Placing {side} order: ${size:.2f} @ {price:.2f} on token {token_id[:10]}...")
+            
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=price,
+                size=size_in_units,
+                side=side,
+                fee_rate_bps=0,
+            )
+            
+            signed_order = self.client.create_order(order_args)
+            resp = self.client.post_order(signed_order, OrderType.FOK)
+            
+            if resp.get('success'):
+                logger.info(f"✅ Order placed! Order ID: {resp.get('orderID')}")
+                
+                if side == "BUY":
+                    self.your_positions[token_id] = self.your_positions.get(token_id, 0.0) + size
+                elif side == "SELL":
+                    self.your_positions[token_id] = max(0, self.your_positions.get(token_id, 0.0) - size)
+                
+                self.save_state()
+                return True
+            else:
+                logger.error(f"❌ Order failed: {resp.get('error', 'Unknown error')}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error placing order: {e}")
+            return False
+    
+    def detect_and_copy_trades(self):
+        """Detect trades by comparing position snapshots"""
+        try:
+            self.current_target_positions = self.get_all_positions(self.target_wallet)
+            
+            if not self.last_target_positions:
+                logger.info(f"📊 Initial scan: {len(self.current_target_positions)} positions found")
+                logger.info(f"🔄 Baseline established - now monitoring for changes...")
+                self.last_target_positions = self.current_target_positions.copy()
+                self.save_state()
+                return
+            
+            changes_detected = 0
+            all_tokens = set(list(self.last_target_positions.keys()) + list(self.current_target_positions.keys()))
+            
+            for token_id in all_tokens:
+                old_size = self.last_target_positions.get(token_id, 0.0)
+                new_size = self.current_target_positions.get(token_id, 0.0)
+                change = new_size - old_size
+                
+                if abs(change) < 0.01:
+                    continue
+                
+                changes_detected += 1
+                
+                logger.info(f"\n{'='*70}")
+                logger.info(f"🎯 TRADE DETECTED!")
+                logger.info(f"Token: {token_id}")
+                logger.info(f"Previous position: ${old_size:.2f}")
+                logger.info(f"New position: ${new_size:.2f}")
+                logger.info(f"Change: ${change:+.2f}")
+                
+                market_info = self.get_market_info(token_id)
+                if market_info:
+                    question = market_info.get('question', 'Unknown')
+                    logger.info(f"📋 Market: {question}")
+                
+                if change > 0:
+                    self.copy_buy(token_id, abs(change))
+                else:
+                    self.copy_sell(token_id, abs(change))
+                
+                logger.info(f"{'='*70}\n")
+            
+            if not hasattr(self, '_quiet_check_counter'):
+                self._quiet_check_counter = 0
+            
+            self._quiet_check_counter += 1
+            if self._quiet_check_counter >= 12 and changes_detected == 0:
+                logger.info(f"✓ Monitoring {len(self.current_target_positions)} positions - no changes")
+                self._quiet_check_counter = 0
+            
+            self.last_target_positions = self.current_target_positions.copy()
+            self.save_state()
+            
+        except Exception as e:
+            logger.error(f"Error detecting trades: {e}")
+    
+    def copy_buy(self, token_id: str, target_buy_size: float):
+        """Copy a BUY trade at fixed percentage"""
+        try:
+            copy_size = self.calculate_copy_size(target_buy_size)
+            
+            if copy_size < self.min_bet_size:
+                logger.warning(f"⚠️  Copy size ${copy_size:.2f} below minimum ${self.min_bet_size}")
+                return
+            
+            success = self.place_market_order(token_id, copy_size, "BUY")
+            
+            if success:
+                logger.info(f"✅ Successfully copied BUY!")
+            else:
+                logger.error(f"❌ Failed to copy BUY")
+                
+        except Exception as e:
+            logger.error(f"Error copying buy: {e}")
+    
+    def copy_sell(self, token_id: str, target_sell_size: float):
+        """Copy a SELL trade at fixed percentage"""
+        try:
+            your_position = self.your_positions.get(token_id, 0.0)
+            
+            if your_position < 0.01:
+                logger.warning(f"⚠️  No position to sell (you have ${your_position:.2f})")
+                return
+            
+            copy_size = self.calculate_copy_size(target_sell_size)
+            copy_size = min(copy_size, your_position)
+            
+            if copy_size < 0.01:
+                logger.warning(f"⚠️  Sell size ${copy_size:.2f} too small")
+                return
+            
+            success = self.place_market_order(token_id, copy_size, "SELL")
+            
+            if success:
+                logger.info(f"✅ Successfully copied SELL!")
+            else:
+                logger.error(f"❌ Failed to copy SELL")
+                
+        except Exception as e:
+            logger.error(f"Error copying sell: {e}")
+    
+    async def monitor_wallet(self):
+        """Main monitoring loop"""
+        logger.info(f"\n🤖 Bot Started - FIXED BET PERCENTAGE MODE")
+        logger.info(f"👀 Monitoring: {self.target_wallet}")
+        logger.info(f"💼 Your wallet: {self.your_wallet}")
+        logger.info(f"📊 Copy percentage: {self.copy_percentage}% of their bet size")
+        logger.info(f"💵 Min: ${self.min_bet_size} | Max: ${self.max_bet_size}")
+        logger.info(f"⚡ Checking every 5 seconds")
+        logger.info(f"{'='*70}\n")
+        
+        self.load_state()
+        
+        consecutive_errors = 0
+        max_errors = 5
+        
+        while True:
+            try:
+                self.detect_and_copy_trades()
+                consecutive_errors = 0
+                await asyncio.sleep(5)
+                
+            except KeyboardInterrupt:
+                logger.info("\n🛑 Bot stopped by user")
+                self.save_state()
+                break
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"❌ Error in monitoring loop ({consecutive_errors}/{max_errors}): {e}")
+                
+                if consecutive_errors >= max_errors:
+                    logger.error("Too many consecutive errors. Stopping bot.")
+                    break
+                
+                await asyncio.sleep(30)
+    
+    def run(self):
+        """Start the bot"""
+        if not self.target_wallet:
+            logger.error("❌ TARGET_WALLET_ADDRESS not set!")
+            return
+        
+        if not self.client or not self.your_wallet:
+            logger.error("❌ Could not initialize client. Check YOUR_PRIVATE_KEY!")
+            return
+        
+        try:
+            asyncio.run(self.monitor_wallet())
+        except Exception as e:
+            logger.error(f"Fatal error: {e}")
+        finally:
+            self.save_state()
+            logger.info("Bot stopped. State saved.")
+
+
+if __name__ == "__main__":
+    bot = PolymarketCopyBotPro()
+    bot.run()
